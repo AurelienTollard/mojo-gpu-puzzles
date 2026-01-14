@@ -2,22 +2,25 @@ from memory import UnsafePointer
 from gpu import thread_idx, block_idx, block_dim
 from gpu.host import DeviceContext
 from testing import assert_equal
+from layout import Layout, LayoutTensor
 
 # ANCHOR: add_10_blocks
 comptime SIZE = 9
 comptime BLOCKS_PER_GRID = (3, 1)
 comptime THREADS_PER_BLOCK = (4, 1)
 comptime dtype = DType.float32
+comptime layout = Layout.row_major(SIZE, 1)
 
 
 fn add_10_blocks(
-    output: UnsafePointer[Scalar[dtype], MutAnyOrigin],
-    a: UnsafePointer[Scalar[dtype], MutAnyOrigin],
+    output: LayoutTensor[dtype, layout, MutAnyOrigin],
+    a: LayoutTensor[dtype, layout, MutAnyOrigin],
     size: UInt,
 ):
     i = block_dim.x * block_idx.x + thread_idx.x
     if i < size:
         # output[i] = a[i] + 10.0
+        output[i, 0] = a[i, 0] + 10.0
 
 
 # ANCHOR_END: add_10_blocks
@@ -27,15 +30,18 @@ def main():
     with DeviceContext() as ctx:
         out = ctx.enqueue_create_buffer[dtype](SIZE)
         out.enqueue_fill(0)
+        out_tensor = LayoutTensor[dtype, layout, MutAnyOrigin](out)
+
         a = ctx.enqueue_create_buffer[dtype](SIZE)
         a.enqueue_fill(0)
         with a.map_to_host() as a_host:
             for i in range(SIZE):
                 a_host[i] = i
+        a_tensor = LayoutTensor[dtype, layout, MutAnyOrigin](a)
 
         ctx.enqueue_function[add_10_blocks, add_10_blocks](
-            out,
-            a,
+            out_tensor,
+            a_tensor,
             UInt(SIZE),
             grid_dim=BLOCKS_PER_GRID,
             block_dim=THREADS_PER_BLOCK,
