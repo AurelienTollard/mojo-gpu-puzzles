@@ -18,9 +18,9 @@ fn add_10_2d(
     row = thread_idx.y
     col = thread_idx.x
 
-    # row-major matrix so apply stride on col
-    pos = col * SIZE + row
-    if pos < size:
+    # row-major matrix so apply stride on row
+    pos = row * size + col
+    if row < size and col < size:
         output[pos] = a[pos] + 10.0
 
 
