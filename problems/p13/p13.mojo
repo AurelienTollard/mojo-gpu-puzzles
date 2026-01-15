@@ -24,9 +24,35 @@ fn conv_1d_simple[
     a: LayoutTensor[dtype, in_layout, ImmutAnyOrigin],
     b: LayoutTensor[dtype, conv_layout, ImmutAnyOrigin],
 ):
-    global_i = block_dim.x * block_idx.x + thread_idx.x
-    local_i = Int(thread_idx.x)
-    # FILL ME IN (roughly 14 lines)
+    shared_a = LayoutTensor[
+        dtype,
+        Layout.row_major(SIZE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED
+    ].stack_allocation()
+    shared_b = LayoutTensor[
+        dtype,
+        Layout.row_major(CONV),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED
+    ].stack_allocation()
+    global_i = Int(block_dim.x * block_idx.x + thread_idx.x)
+
+    if global_i < CONV:
+        shared_a[global_i] = a[global_i]
+        shared_b[global_i] = b[global_i]
+    elif global_i < SIZE:
+        shared_a[global_i] = a[global_i]
+    barrier()
+
+    if global_i < SIZE:
+        var acc: output.element_type = 0
+        for f in range(CONV):
+            if global_i + f < SIZE:
+                acc += shared_a[global_i + f] * shared_b[f]
+
+        output[global_i] = acc
+
 
 
 # ANCHOR_END: conv_1d_simple
@@ -50,7 +76,38 @@ fn conv_1d_block_boundary[
 ):
     global_i = Int(block_dim.x * block_idx.x + thread_idx.x)
     local_i = Int(thread_idx.x)
-    # FILL ME IN (roughly 18 lines)
+    shared_a = LayoutTensor[
+        dtype,
+        Layout.row_major(TPB + CONV_2 - 1), # + CONV_2 - 1 to take in account the boundaries
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED
+    ].stack_allocation()
+    shared_b = LayoutTensor[
+        dtype,
+        Layout.row_major(CONV_2),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED
+    ].stack_allocation()
+
+    if local_i < CONV_2:
+        shared_b[local_i] = b[local_i]
+
+    if global_i < SIZE_2:
+        shared_a[local_i] = a[global_i]
+
+    # Fill boundaries
+    if local_i < CONV_2 - 1:
+        if TPB + global_i < SIZE_2:
+            shared_a[TPB + local_i] = a[global_i + TPB] # fetch CONV_2 -1 first values from next block
+    barrier()
+
+    if global_i < SIZE_2 + CONV_2 - 1:
+        var acc: output.element_type = 0
+        for f in range(CONV_2):
+            if global_i + f < SIZE_2 + CONV_2 - 1:
+                acc += shared_a[local_i + f] * shared_b[f]
+
+        output[global_i] = acc
 
 
 # ANCHOR_END: conv_1d_block_boundary
