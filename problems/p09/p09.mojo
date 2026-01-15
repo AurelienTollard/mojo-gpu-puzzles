@@ -12,7 +12,7 @@ comptime BLOCKS_PER_GRID = 1
 comptime THREADS_PER_BLOCK = SIZE
 comptime dtype = DType.float32
 comptime vector_layout = Layout.row_major(SIZE)
-comptime ITER = 2
+comptime ITER = 3 # range is [0; n( and we need windows size being 3
 
 
 # ANCHOR: first_crash
@@ -75,7 +75,7 @@ fn collaborative_filter(
         # Apply collaborative filter with neighbors
         if thread_id > 0:
             shared_workspace[thread_id] += shared_workspace[thread_id - 1] * 0.5
-        barrier()
+        barrier() # The barrier is waiting for the 4 threads to reach here. But 4th thread is waiting to the barrier bellow
 
     # Phase 3: Final synchronization and output
     barrier()
@@ -106,7 +106,7 @@ def main():
         print()
 
         with DeviceContext() as ctx:
-            input_buf = ctx.enqueue_create_buffer[dtype](0)
+            input_buf = ctx.enqueue_create_buffer[dtype](0) # buffer not allocated lead to nullptr
             result_buf = ctx.enqueue_create_buffer[dtype](SIZE)
             result_buf.enqueue_fill(0)
 
