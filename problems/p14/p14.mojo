@@ -23,8 +23,33 @@ fn prefix_sum_simple[
     size: UInt,
 ):
     global_i = block_dim.x * block_idx.x + thread_idx.x
-    local_i = thread_idx.x
-    # FILL ME IN (roughly 18 lines)
+    local_i = Int(thread_idx.x)
+    shared = LayoutTensor[
+        dtype,
+        Layout.row_major(SIZE),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED
+    ].stack_allocation()
+
+    if global_i < SIZE:
+        shared[local_i] = a[global_i]
+    barrier()
+
+    offset = 1
+    for i in range(Int(log2(Scalar[dtype](TPB)))):
+        local = 0
+        if local_i - offset >= 0 and global_i < size:
+            local = Int(shared[local_i - offset])
+        barrier()
+
+        if local_i - offset >= 0 and global_i < size:
+            shared[local_i] += local
+        offset *= 2
+        barrier()
+
+
+    if global_i < SIZE:
+        output[global_i] = shared[local_i]
 
 
 # ANCHOR_END: prefix_sum_simple
@@ -47,8 +72,34 @@ fn prefix_sum_local_phase[
     size: UInt,
 ):
     global_i = block_dim.x * block_idx.x + thread_idx.x
-    local_i = thread_idx.x
-    # FILL ME IN (roughly 20 lines)
+    local_i = Int(thread_idx.x)
+    shared = LayoutTensor[
+        dtype,
+        Layout.row_major(TPB),
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED
+    ].stack_allocation()
+
+    if global_i < size:
+        shared[local_i] = a[global_i]
+    barrier()
+
+    offset = 1
+    for i in range(Int(log2(Scalar[dtype](TPB)))):
+        local = 0
+        if local_i - offset >= 0 and global_i < size:
+            local = Int(shared[local_i - offset])
+        barrier()
+
+        if local_i - offset >= 0 and global_i < size:
+            shared[local_i] += local
+        offset *= 2
+        barrier()
+
+
+    if global_i < size:
+        output[global_i] = shared[local_i]
+
 
 
 # Kernel 2: Add block sums to their respective blocks
@@ -56,7 +107,10 @@ fn prefix_sum_block_sum_phase[
     layout: Layout
 ](output: LayoutTensor[dtype, layout, MutAnyOrigin], size: UInt):
     global_i = block_dim.x * block_idx.x + thread_idx.x
-    # FILL ME IN (roughly 3 lines)
+    local_i = thread_idx.x
+    if global_i < size:
+        if global_i - local_i - 1 > 0: # get last element of previous block, if there is
+            output[global_i] += output[global_i - local_i - 1]
 
 
 # ANCHOR_END: prefix_sum_complete
