@@ -6,6 +6,7 @@ from gpu.host import DeviceContext
 from gpu import thread_idx, block_idx, block_dim, barrier
 from gpu.memory import AddressSpace
 from layout import Layout, LayoutTensor
+from math import log2
 
 
 comptime TPB = 8
@@ -26,10 +27,34 @@ fn axis_sum[
     size: UInt,
 ):
     global_i = block_dim.x * block_idx.x + thread_idx.x
-    local_i = thread_idx.x
+    local_i = Int(thread_idx.x)
     batch = block_idx.y
-    # FILL ME IN (roughly 15 lines)
+    shared = LayoutTensor[
+        dtype,
+        Layout.row_major(TPB), # TBD
+        MutAnyOrigin,
+        address_space = AddressSpace.SHARED
+    ].stack_allocation()
 
+    if global_i < size * BATCH:
+        shared[local_i] = a[batch, local_i]
+    barrier()
+
+    offset = TPB // 2
+    for i in range(Int(log2(Scalar[dtype](TPB)))):
+        temp: output.element_type = 0
+        if local_i - offset >= 0 and global_i < size:
+            temp = shared[local_i]
+        barrier()
+
+        if local_i - offset >= 0 and global_i < size:
+            shared[local_i - offset] += temp
+        barrier()
+
+        offset //= 2
+
+    if local_i == 0:
+        output[batch, 0] = shared[0]
 
 # ANCHOR_END: axis_sum
 
