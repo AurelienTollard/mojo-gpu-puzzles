@@ -1,5 +1,6 @@
-from typing import Optional
 from pathlib import Path
+from typing import Optional
+
 import numpy as np
 
 # ANCHOR: conv1d_pytorch
@@ -32,7 +33,7 @@ def conv1d_pytorch(
         }
     ]
 
-    # FILL IN with 1 line of code
+    conv1d(output_tensor, input_tensor, kernel_tensor)
 
     return output_tensor
 
@@ -176,9 +177,7 @@ if __name__ == "__main__":
         print("✅ MAX Graph verification PASSED")
 
         if pytorch_result_cpu is not None:
-            np.testing.assert_allclose(
-                pytorch_result_cpu, max_graph_result, rtol=1e-5
-            )
+            np.testing.assert_allclose(pytorch_result_cpu, max_graph_result, rtol=1e-5)
             print("✅ PyTorch and MAX Graph results MATCH")
 
     except Exception as e:
@@ -187,8 +186,6 @@ if __name__ == "__main__":
     print()
     print("Key Learning Points:")
     print("• Same Mojo kernel works for both MAX Graph and PyTorch")
-    print(
-        "• PyTorch CustomOpLibrary requires explicit output tensor allocation"
-    )
+    print("• PyTorch CustomOpLibrary requires explicit output tensor allocation")
     print("• Both approaches call the exact same optimized GPU kernel")
     print("• PyTorch tensors can stay on GPU throughout the computation")
