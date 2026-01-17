@@ -136,10 +136,24 @@ fn layernorm_kernel[
         return
 
     # Compute statistics for this sequence position (redundant but simple)
-    var sum_val: Scalar[dtype] = 0
-    var sq_sum: Scalar[dtype] = 0
+    var sum: Scalar[dtype] = 0
+    # will be used for E[X^2] - E[X]^2
+    var square_sum: Scalar[dtype] = 0
 
-    # FILL ME IN (roughly 11 lines)
+    @parameter
+    for i in range(hidden_dim):
+        val = input[batch_idx, seq_idx, i]
+        sum += rebind[Scalar[dtype]](val)
+        square_sum += rebind[Scalar[dtype]](val * val)
+
+    mean = sum / hidden_dim
+    variance = square_sum / hidden_dim - mean * mean
+    inv_variance = 1 / sqrt(variance + 1e-5)
+
+    normalized = (input[batch_idx, seq_idx, hidden_idx] - mean) * inv_variance
+    output[batch_idx, seq_idx, hidden_idx] = (
+        ln_weight[hidden_idx] * normalized + ln_bias[hidden_idx]
+    )
 
 
 # ANCHOR_END: layernorm_kernel
@@ -249,11 +263,41 @@ fn minimal_fused_kernel[
 
     # Step 1: Compute LayerNorm statistics once per sequence position
 
-    # FILL IN roughly 10 lines
+    var sum: Scalar[dtype] = 0
+    var square_sum: Scalar[dtype] = 0
+
+    @parameter
+    for i in range(hidden_dim):
+        val = input[batch_idx, seq_idx, i]
+        sum += rebind[Scalar[dtype]](val)
+        square_sum += rebind[Scalar[dtype]](val * val)
+
+    mean = sum / hidden_dim
+    variance = square_sum / hidden_dim - mean * mean
+    inv_variance = 1 / sqrt(variance + 1e-5)
+
+    # Apparently risky if hidden_dim is big -> mapped to global memroy if doesnt fit
+    normalized = LayoutTensor[
+        dtype,
+        Layout.row_major(hidden_dim),
+        MutAnyOrigin,
+        address_space = AddressSpace.LOCAL
+    ].stack_allocation()
+
+    @parameter
+    for i in range(hidden_dim):
+        inp = input[batch_idx, seq_idx, i]
+        normalized[i] = (inp - mean) * inv_variance * ln_weight[i] + ln_bias[i]
 
     # Step 2: Compute all outputs for this sequence position
+    @parameter
+    for o in range(output_dim):
+        acc: output.element_type = 0
+        @parameter
+        for i in range(hidden_dim):
+            acc += rebind[Scalar[dtype]](normalized[i] * linear_weight[o, i])
+        output[batch_idx, seq_idx, o] = acc + rebind[Scalar[dtype]](linear_bias[o])
 
-    # FILL IN roughly 10 lines
 
 
 # ANCHOR_END: minimal_fused_forward_kernel
@@ -301,19 +345,19 @@ fn minimal_fused_kernel_backward[
         # Initialize grad_ln_weight and grad_ln_bias
         @parameter
         for h in range(hidden_dim):
-            grad_ln_weight.ptr.offset(h).init_pointee_copy(0)
-            grad_ln_bias.ptr.offset(h).init_pointee_copy(0)
+            (grad_ln_weight.ptr + h).init_pointee_copy(0)
+            (grad_ln_bias.ptr + h).init_pointee_copy(0)
 
         # Initialize grad_weight and grad_bias
         @parameter
         for out_idx in range(output_dim):
-            grad_bias.ptr.offset(out_idx).init_pointee_copy(0)
+            (grad_bias.ptr + out_idx).init_pointee_copy(0)
 
             @parameter
             for h in range(hidden_dim):
-                grad_weight.ptr.offset(
-                    out_idx * hidden_dim + h
-                ).init_pointee_copy(0)
+                (grad_weight.ptr + out_idx * hidden_dim + h).init_pointee_copy(
+                    0
+                )
 
     # Note: We cannot use barrier() here as it only synchronizes within a block.
     # The atomic operations will handle synchronization across blocks.
