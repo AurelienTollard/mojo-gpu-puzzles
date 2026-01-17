@@ -13,10 +13,10 @@ fn embedding_kernel_coalesced[
     indices_layout: Layout,
     weights_layout: Layout,
     out_layout: Layout,
-    batch_size: Int,
-    seq_len: Int,
-    vocab_size: Int,
-    embed_dim: Int,
+    batch_size: Int, # Batch of indices in input
+    seq_len: Int, # indices length
+    vocab_size: Int, # max number of token indices
+    embed_dim: Int, # size of embening per token indice
     dtype: DType = DType.float32,
 ](
     output: LayoutTensor[dtype, out_layout, MutAnyOrigin],
@@ -34,15 +34,15 @@ fn embedding_kernel_coalesced[
 
     # Simple 1D indexing - each thread = one output element
     global_idx = Int(block_idx.x * block_dim.x + thread_idx.x)
+    # output length. We want one thread per output element
     total_elements = batch_size * seq_len * embed_dim
 
     if global_idx >= total_elements:
         return
 
     # Convert to (batch, seq, embed) coordinates
-    # FILL IN roughly 4 lines
 
-    # Get token index
+d    # Get token index
     # FILL IN 1 line
 
     # Simple, correct assignment
