@@ -281,7 +281,7 @@ fn minimal_fused_kernel[
         dtype,
         Layout.row_major(hidden_dim),
         MutAnyOrigin,
-        address_space = AddressSpace.LOCAL
+        address_space = AddressSpace.LOCAL,
     ].stack_allocation()
 
     @parameter
@@ -293,11 +293,13 @@ fn minimal_fused_kernel[
     @parameter
     for o in range(output_dim):
         acc: output.element_type = 0
+
         @parameter
         for i in range(hidden_dim):
             acc += rebind[Scalar[dtype]](normalized[i] * linear_weight[o, i])
-        output[batch_idx, seq_idx, o] = acc + rebind[Scalar[dtype]](linear_bias[o])
-
+        output[batch_idx, seq_idx, o] = acc + rebind[Scalar[dtype]](
+            linear_bias[o]
+        )
 
 
 # ANCHOR_END: minimal_fused_forward_kernel
@@ -363,33 +365,103 @@ fn minimal_fused_kernel_backward[
     # The atomic operations will handle synchronization across blocks.
 
     # Step 1: Recompute forward pass statistics (needed for gradients)
-    var sum_val: Scalar[dtype] = 0
-    var sq_sum: Scalar[dtype] = 0
+    var sum: Scalar[dtype] = 0
+    var square_sum: Scalar[dtype] = 0
 
-    # FILL IN roughly 8 lines
+    @parameter
+    for i in range(hidden_dim):
+        val = input[batch_idx, seq_idx, i]
+        sum += rebind[Scalar[dtype]](val)
+        square_sum += rebind[Scalar[dtype]](val * val)
+
+    mean = sum / hidden_dim
+    variance = square_sum / hidden_dim - mean * mean + 1e-5
+    inv_variance = 1 / sqrt(variance)
 
     # Step 2: Atomically accumulate gradients w.r.t. linear bias
+    # use Atomic[dtype].fetch_add(ptr, Scalar[dtype]) to atomically add/sub across blocks
+    # For linear bias dL/db = dL/dy. So accumulate previous bias gradient
 
-    # FILL IN roughly 4 lines
+    @parameter
+    for o in range(output_dim):
+        _ = Atomic[dtype].fetch_add(
+            grad_bias.ptr + o,
+            rebind[Scalar[dtype]](grad_output[batch_idx, seq_idx, o]),
+        )
 
     # Step 3: Atomically accumulate gradients w.r.t. linear weight
     # Make sure to use the correct atomic operation to avoid race conditions
+    # For linear weight dL/db = dL/dy * x. Here input is transposed(gamma * norm + beta) due to fused kernel
+    @parameter
+    for o in range(output_dim):
+        @parameter
+        for h in range(hidden_dim):
+            input_val = input[batch_idx, seq_idx, h]
+            normalized_val = (input_val - mean) * inv_variance
+            ln_output_val = ln_weight[h] * normalized_val + ln_bias[h]
+            _ = Atomic[dtype].fetch_add(
+                grad_weight.ptr + o * hidden_dim + h,
+                rebind[Scalar[dtype]](grad_output[batch_idx, seq_idx, o] * ln_output_val)
+            )
 
-    # FILL IN roughly 10 lines
 
     # Step 4: Atomically accumulate gradients w.r.t. LayerNorm parameters
+    # dylinear / dnorm = Beta
+    # dnorm / dx = {check puzzle}
+    @parameter
+    for h in range(hidden_dim):
+        grad_ln_out: grad_output.element_type = 0
+        normalized_val = (input[batch_idx, seq_idx, h] - mean) * inv_variance
 
-    # FILL IN roughly 10 lines
+        @parameter
+        for o in range(output_dim):
+            grad_ln_out += grad_output[batch_idx, seq_idx, o] * linear_weight[o, h]
+
+        _ = Atomic[dtype].fetch_add(
+            grad_ln_bias.ptr + h,
+            rebind[Scalar[dtype]](grad_ln_out)
+        )
+        _ = Atomic[dtype].fetch_add(
+            grad_ln_weight.ptr + h,
+            rebind[Scalar[dtype]](grad_ln_out * normalized_val)
+        )
 
     # Step 5: Compute gradients w.r.t. input (LayerNorm backward)
     # Compute sum terms needed for LayerNorm backward
     # Make sure to use the correct atomic operation to avoid race conditions
 
-    # FILL IN roughly 12 lines
+    sum_1 = 0
+    sum_2 = 0
+    @parameter
+    for h in range(hidden_dim):
+        normalized_val = (input[batch_idx, seq_idx, h] - mean) * inv_variance
+        grad_ln_out = 0
+
+        @parameter
+        for o in range(output_dim):
+            grad_ln_out += grad_output[batch_idx, seq_idx, o] * linear_weight[o,h]
+
+        # honestly dont know whats the name here, but first part of the input deriv
+        idk = grad_ln_out * grad_ln_weight[h]
+        sum_1 += idk
+        sum2 += idk * normalilzed_val
 
     # Compute actual input gradients (no race conditions here - each thread writes to different positions)
 
-    # FILL IN roughly 10 lines
+    @parameter
+    for h in range(hidden_dim):
+        normalized_val = (input[batch_idx, seq_idx, h] - mean) * inv_variance
+        grad_ln_out = 0
+
+        @parameter
+        for o in range(output_dim):
+            grad_ln_out += grad_output[batch_idx, seq_idx, o] * linear_weight[o,h]
+
+        # honestly dont know whats the name here, but first part of the input deriv
+        idk = grad_ln_out * grad_ln_weight[h]
+        grad_input[batch_idx, seq_idx, h] = inv_variance * (
+            idk - sum_1 / hidden_dim - (sum_2 - normalized_val) / hidden_dim
+        )
 
 
 # ANCHOR_END: minimal_fused_backward_kernel
