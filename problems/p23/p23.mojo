@@ -2,7 +2,7 @@ from gpu import thread_idx, block_dim, block_idx, barrier
 from gpu.host import DeviceContext
 from gpu.host.compile import get_gpu_target
 from layout import Layout, LayoutTensor
-from utils import IndexList
+from utils import Index, IndexList
 from math import log2
 from algorithm.functional import elementwise, vectorize
 from sys import simd_width_of, argv, align_of
@@ -31,8 +31,11 @@ fn elementwise_add[
         simd_width: Int, rank: Int, alignment: Int = align_of[dtype]()
     ](indices: IndexList[rank]) capturing -> None:
         idx = indices[0]
-        print("idx:", idx)
-        # FILL IN (2 to 4 lines)
+        # So it automatically simd-ize the operator within this function?
+        var a = a.aligned_load[simd_width](Index(idx))
+        var b = b.aligned_load[simd_width](Index(idx))
+        output.store[simd_width](Index(idx), a + b)
+
 
     elementwise[add, SIMD_WIDTH, target="gpu"](a.size(), ctx)
 
@@ -68,7 +71,11 @@ fn tiled_elementwise_add[
         a_tile = a.tile[tile_size](tile_id)
         b_tile = b.tile[tile_size](tile_id)
 
-        # FILL IN (6 lines at most)
+        @parameter
+        for t_idx in range(tile_size):
+            a = a_tile.load[simd_width](Index(t_idx))
+            b = b_tile.load[simd_width](Index(t_idx))
+            output_tile.store[simd_width](Index(t_idx), a + b)
 
     num_tiles = (size + tile_size - 1) // tile_size
     elementwise[process_tiles, 1, target="gpu"](num_tiles, ctx)
@@ -106,7 +113,13 @@ fn manual_vectorized_tiled_elementwise_add[
         a_tile = a.tile[chunk_size](tile_id)
         b_tile = b.tile[chunk_size](tile_id)
 
-        # FILL IN (7 lines at most)
+        # So now we know each tiles can do simd_width element, so we should do simd_width iteration rather than + 1?
+        @parameter
+        for t_idx in range(tile_size):
+            pos = tile_id * chunk_size + t_idx * simd_width
+            a = a_tile.load[simd_width](Index(pos))
+            b = b_tile.load[simd_width](Index(pos))
+            output_tile.store[simd_width](Index(pos), a + b)
 
     # Number of tiles needed: each tile processes chunk_size elements
     num_tiles = (size + chunk_size - 1) // chunk_size
@@ -154,7 +167,14 @@ fn vectorize_within_tiles_elementwise_add[
             actual_tile_size,
         )
 
-        # FILL IN (9 lines at most)
+        fn closure[width: Int](i: Int) unified {read tile_start, read a, read b, mut output}:
+            global_idx = tile_start + i
+            if global_idx + width <= size:
+                var a = a.load[width](Index(global_idx))
+                var b = b.load[width](Index(global_idx))
+                output.store[width](Index(global_idx), a + b)
+
+        vectorize[simd_width](actual_tile_size, closure)
 
     num_tiles = (size + tile_size - 1) // tile_size
     elementwise[
@@ -391,7 +411,7 @@ def main():
         print("Running P21 GPU Benchmarks...")
         print("SIMD width:", SIMD_WIDTH)
         print("-" * 80)
-        bench_config = BenchConfig(max_iters=10, num_warmup_iters=1)
+        bench_config = BenchConfig(max_iters=100, num_warmup_iters=1)
         bench = Bench(bench_config.copy())
 
         print("Testing SIZE=16, TILE=4")

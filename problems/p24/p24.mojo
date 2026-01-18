@@ -5,7 +5,7 @@ from gpu.memory import AddressSpace
 from gpu.primitives.warp import sum as warp_sum, WARP_SIZE
 from algorithm.functional import elementwise
 from layout import Layout, LayoutTensor
-from utils import IndexList
+from utils import Index, IndexList
 from sys import argv, simd_width_of, size_of, align_of
 from testing import assert_equal
 from random import random_float64
@@ -80,7 +80,12 @@ fn simple_warp_dot_product[
     b: LayoutTensor[dtype, in_layout, ImmutAnyOrigin],
 ):
     global_i = Int(block_dim.x * block_idx.x + thread_idx.x)
-    # FILL IN (6 lines at most)
+    partial: output.element_type = 0
+    if global_i < size:
+        partial = a[global_i] * b[global_i]
+    result = warp_sum(partial)
+    if lane_id() == 0:
+        output[global_i // WARP_SIZE] = result
 
 
 # ANCHOR_END: simple_warp_kernel
@@ -106,8 +111,17 @@ fn functional_warp_dot_product[
         simd_width: Int, rank: Int, alignment: Int = align_of[dtype]()
     ](indices: IndexList[rank]) capturing -> None:
         idx = indices[0]
-        print("idx:", idx)
-        # FILL IN (10 lines at most)
+        partial: output.element_type = 0
+        if idx < size:
+            a_val = a.load[1](Index(idx))
+            b_val = b.load[1](Index(idx))
+            partial = a_val * b_val
+        else:
+            partial = 0.0
+
+        result = warp_sum(partial)
+        if lane_id() == 0:
+            output.store[1](Index(idx // WARP_SIZE), result)
 
     # Launch exactly size == WARP_SIZE threads (one warp) to process all elements
     elementwise[compute_dot_product, 1, target="gpu"](size, ctx)
