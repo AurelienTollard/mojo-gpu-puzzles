@@ -3,7 +3,7 @@ from gpu.host import DeviceContext
 from gpu.primitives.warp import shuffle_xor, prefix_sum, WARP_SIZE
 from layout import Layout, LayoutTensor
 from sys import argv
-from testing import assert_equal, assert_almost_equal
+from testing import assert_equal, assert_almost_equal, assert_true
 from math import log2
 
 # ANCHOR: butterfly_pair_swap
@@ -175,10 +175,25 @@ fn warp_partition[
     if global_i < size:
         current_val = input[global_i]
 
+        left_part: Scalar[dtype] = 1 if current_val < pivot else 0
+        right_part: Scalar[dtype] = 1 if current_val >= pivot else 0
+
+        left_sum = prefix_sum(left_part)
+        right_sum = prefix_sum(right_part)
+
+        left_total = left_part
+
+        # Find how many will be on left in total
         stride = WARP_SIZE // 2
         @parameter
         for i in range(Int(log2(Scalar[dtype](WARP_SIZE)))):
+            left_total += shuffle_xor(left_total, stride)
+            stride //= 2
 
+        if left_part:
+            output[Int(left_sum - 1)] = current_val
+        else:
+            output[Int(left_total + right_sum - 1)] = current_val
 
 # ANCHOR_END: warp_partition
 
