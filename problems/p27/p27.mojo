@@ -77,7 +77,14 @@ fn block_sum_dot_product[
     global_i = Int(block_dim.x * block_idx.x + thread_idx.x)
     local_i = thread_idx.x
 
-    # FILL IN (roughly 6 lines)
+    partial_product: Scalar[dtype] = 0
+    if global_i < size:
+        partial_product = rebind[Scalar[dtype]](a[global_i] * b[global_i])
+
+    total = block.sum[block_size = tpb, broadcast = False](partial_product)
+
+    if global_i == 0:
+        output[global_i] = total
 
 
 # ANCHOR_END: block_sum_dot_product
@@ -109,24 +116,36 @@ fn block_histogram_bin_extract[
 
     # Step 1: Each thread determines its bin and element value
 
-    # FILL IN (roughly 9 lines)
+    bin: Scalar[dtype] = 0
+    elem: Scalar[dtype] = 0
+    if global_i < size:
+        elem = rebind[Scalar[dtype]](input_data[global_i])
+        bin = floor(elem * num_bins)
+        if bin >= num_bins:
+            bin = num_bins - 1
+        if bin < 0:
+            bin = 0
 
     # Step 2: Create predicate for target bin extraction
 
-    # FILL IN (roughly 3 line)
+    included = 1 if global_i < size and bin == target_bin else 0
 
     # Step 3: Use block.prefix_sum() for parallel bin extraction!
     # This computes where each thread should write within the target bin
 
-    # FILL IN (1 line)
+    # exclusive so we directly have the position no need to substract self
+    bin_ext = block.prefix_sum[dtype=DType.int32, block_size=tpb, exclusive=True](included)
 
     # Step 4: Extract and pack elements belonging to target_bin
 
-    # FILL IN (roughly 2 line)
+    if included:
+        bin_output[bin_ext] = elem
 
     # Step 5: Final thread computes total count for this bin
 
-    # FILL IN (roughly 3 line)
+    if local_i == tpb - 1:
+        total_count = bin_ext + included
+        count_output[0] = total_count
 
 
 # ANCHOR_END: block_histogram
