@@ -4,6 +4,7 @@ from gpu.primitives.warp import shuffle_xor, prefix_sum, WARP_SIZE
 from layout import Layout, LayoutTensor
 from sys import argv
 from testing import assert_equal, assert_almost_equal
+from math import log2
 
 # ANCHOR: butterfly_pair_swap
 comptime SIZE = WARP_SIZE
@@ -27,7 +28,10 @@ fn butterfly_pair_swap[
     """
     global_i = Int(block_dim.x * block_idx.x + thread_idx.x)
 
-    # FILL ME IN (4 lines)
+    if global_i < size:
+        value = input[global_i]
+        result = shuffle_xor(value, 1)
+        output[global_i] = result
 
 
 # ANCHOR_END: butterfly_pair_swap
@@ -49,7 +53,16 @@ fn butterfly_parallel_max[
     """
     global_i = Int(block_dim.x * block_idx.x + thread_idx.x)
 
-    # FILL ME IN (roughly 7 lines)
+    if global_i < size:
+        stride = WARP_SIZE // 2
+        value = input[global_i]
+        @parameter
+        for i in range(Int(log2(Scalar[dtype](WARP_SIZE)))):
+            swapped = shuffle_xor(value, stride)
+            value = max(value, swapped)
+            stride //= 2
+
+        output[global_i] = value
 
 
 # ANCHOR_END: butterfly_parallel_max
@@ -77,11 +90,20 @@ fn butterfly_conditional_max[
     lane = lane_id()
 
     if global_i < size:
-        current_val = input[global_i]
-        min_val = current_val
+        max_val = input[global_i]
+        min_val = max_val
+        stride = WARP_SIZE // 2
 
-        # FILL ME IN (roughly 11 lines)
+        @parameter
+        for i in range(Int(log2(Scalar[dtype](WARP_SIZE)))):
+            max_val = max(max_val, shuffle_xor(max_val, stride))
+            min_val = min(min_val, shuffle_xor(min_val, stride))
+            stride //= 2
 
+        if global_i % 2 == 0:
+            output[global_i] = max_val
+        else:
+            output[global_i] = min_val
 
 # ANCHOR_END: butterfly_conditional_max
 
@@ -115,7 +137,10 @@ fn warp_inclusive_prefix_sum[
     """
     global_i = Int(block_dim.x * block_idx.x + thread_idx.x)
 
-    # FILL ME IN (roughly 4 lines)
+    if global_i < size:
+        value = input[global_i]
+        sum = prefix_sum(rebind[Scalar[dtype]](value))
+        output[global_i] = sum
 
 
 # ANCHOR_END: warp_inclusive_prefix_sum
@@ -150,7 +175,9 @@ fn warp_partition[
     if global_i < size:
         current_val = input[global_i]
 
-        # FILL ME IN (roughly 13 lines)
+        stride = WARP_SIZE // 2
+        @parameter
+        for i in range(Int(log2(Scalar[dtype](WARP_SIZE)))):
 
 
 # ANCHOR_END: warp_partition
