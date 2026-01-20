@@ -33,6 +33,9 @@ fn async_copy_overlap_convolution[
     for efficient memory transfers, extending the patterns from p14 matmul.
     """
 
+    global_i = Int(block_idx.x * block_dim.x + thread_idx.x)
+    local_i = Int(thread_idx.x)
+
     # Shared memory buffers (like p14, but without .fill(0) to avoid race)
     input_shared = LayoutTensor[
         dtype,
@@ -47,7 +50,30 @@ fn async_copy_overlap_convolution[
         address_space = AddressSpace.SHARED,
     ].stack_allocation()
 
-    # FILL IN HERE (roughly 19 lines)
+    # One tile per block (TILE_SIZE = TPB)
+    input_tile = input.tile[CONV_TILE_SIZE](Int(block_idx.x))
+    copy_dram_to_sram_async[
+        thread_layout = Layout.row_major(THREADS_PER_BLOCK_ASYNC)
+    ](input_shared, input_tile)
+
+    if local_i < KERNEL_SIZE:
+        kernel_shared[local_i] = kernel[local_i]
+
+    async_copy_wait_all()
+    barrier()
+
+    acc: output.element_type = 0
+    if local_i < CONV_TILE_SIZE and global_i < output.shape[0]():
+        if local_i >= HALO_SIZE and local_i < CONV_TILE_SIZE - HALO_SIZE:
+            @parameter
+            for k in range(KERNEL_SIZE):
+                next_pos = local_i + k - HALO_SIZE
+                if next_pos < CONV_TILE_SIZE and next_pos >= 0:
+                    acc += input_shared[next_pos] * kernel[k]
+        else:
+            acc += input_shared[local_i]
+
+        output[global_i] = acc
 
 
 # ANCHOR_END: async_copy_overlap_convolution
