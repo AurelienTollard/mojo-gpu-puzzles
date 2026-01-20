@@ -62,19 +62,61 @@ fn multi_stage_image_blur_pipeline[
 
     # Stage 1: Load and preprocess (threads 0-127)
 
-    # FILL ME IN (roughly 10 lines)
+    if local_i < STAGE1_THREADS and global_i < size:
+        input_shared[local_i] = input[global_i] * 1.1
+
+        if local_i + STAGE1_THREADS < size:
+            input_shared[local_i + STAGE1_THREADS] = input[global_i + STAGE1_THREADS] * 1.1
+        else:
+            input_shared[local_i + STAGE1_THREADS] = 0
+    else:
+        input_shared[local_i] = 0
+        if local_i + STAGE1_THREADS < TPB:
+            input_shared[local_i + STAGE1_THREADS] = 0
 
     barrier()  # Wait for Stage 1 completion
 
     # Stage 2: Apply blur (threads 128-255)
 
-    # FILL ME IN (roughly 25 lines)
+    if local_i < TPB and local_i >= STAGE1_THREADS and global_i < size:
+        valid = 0 # we know valid will atleast be equal to 1 no risk of div 0
+        acc: output.element_type = 0
+        @parameter
+        for b in range(2 * BLUR_RADIUS + 1): # + 1 for 0
+            next_pos = local_i - BLUR_RADIUS + b
+            if next_pos >= 0 and next_pos < TPB:
+                acc += input_shared[next_pos]
+                valid += 1
+
+        blur_shared[local_i] = acc / valid
+
+        if local_i - STAGE1_THREADS >= 0:
+            valid = 0 # we know valid will atleast be equal to 1 no risk of div 0
+            acc: output.element_type = 0
+            @parameter
+            for b in range(2 * BLUR_RADIUS + 1): # + 1 for 0
+                next_pos = local_i - STAGE1_THREADS - BLUR_RADIUS + b
+                if next_pos >= 0 and next_pos < TPB:
+                    acc += input_shared[next_pos]
+                    valid += 1
+            blur_shared[local_i - STAGE1_THREADS] = acc / valid
+
 
     barrier()  # Wait for Stage 2 completion
 
     # Stage 3: Final smoothing (all threads)
 
-    # FILL ME IN (roughly 7 lines)
+    if global_i < size:
+        result = blur_shared[local_i]
+
+        if local_i == 0:
+            output[local_i] = (result + blur_shared[local_i + 1]) * 0.6
+        elif local_i > 0 and local_i < 255:
+            output[local_i] = (result + blur_shared[local_i + 1]) * 0.6 + (result + blur_shared[local_i - 1]) * 0.6
+        elif local_i == 255:
+            output[local_i] = (result + blur_shared[local_i - 1]) * 0.
+        else:
+            output[local_i] = 0
 
     barrier()  # Ensure all writes complete
 
