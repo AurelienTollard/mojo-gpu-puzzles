@@ -82,8 +82,8 @@ fn multi_stage_image_blur_pipeline[
         valid = 0 # we know valid will atleast be equal to 1 no risk of div 0
         acc: output.element_type = 0
         @parameter
-        for b in range(2 * BLUR_RADIUS + 1): # + 1 for 0
-            next_pos = local_i - BLUR_RADIUS + b
+        for b in range(-BLUR_RADIUS, BLUR_RADIUS + 1): # + 1 for 0
+            next_pos = local_i + b
             if next_pos >= 0 and next_pos < TPB:
                 acc += input_shared[next_pos]
                 valid += 1
@@ -94,8 +94,8 @@ fn multi_stage_image_blur_pipeline[
             valid = 0 # we know valid will atleast be equal to 1 no risk of div 0
             acc: output.element_type = 0
             @parameter
-            for b in range(2 * BLUR_RADIUS + 1): # + 1 for 0
-                next_pos = local_i - STAGE1_THREADS - BLUR_RADIUS + b
+            for b in range(-BLUR_RADIUS, BLUR_RADIUS + 1): # + 1 for 0
+                next_pos = local_i - STAGE1_THREADS + b
                 if next_pos >= 0 and next_pos < TPB:
                     acc += input_shared[next_pos]
                     valid += 1
@@ -107,16 +107,14 @@ fn multi_stage_image_blur_pipeline[
     # Stage 3: Final smoothing (all threads)
 
     if global_i < size:
-        result = blur_shared[local_i]
-
         if local_i == 0:
-            output[local_i] = (result + blur_shared[local_i + 1]) * 0.6
+            output[global_i] = (blur_shared[local_i] + blur_shared[local_i + 1]) * 0.6
         elif local_i > 0 and local_i < 255:
-            output[local_i] = (result + blur_shared[local_i + 1]) * 0.6 + (result + blur_shared[local_i - 1]) * 0.6
+            output[global_i] = ((blur_shared[local_i] + blur_shared[local_i - 1]) * 0.6 + blur_shared[local_i + 1]) * 0.6
         elif local_i == 255:
-            output[local_i] = (result + blur_shared[local_i - 1]) * 0.
+            output[global_i] = (blur_shared[local_i] + blur_shared[local_i - 1]) * 0.6
         else:
-            output[local_i] = 0
+            output[global_i] = 0
 
     barrier()  # Ensure all writes complete
 
