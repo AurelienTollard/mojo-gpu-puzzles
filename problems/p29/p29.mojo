@@ -186,7 +186,10 @@ fn double_buffered_stencil_computation[
 
     # Initialize buffer_A with input data
 
-    # FILL ME IN (roughly 4 lines)
+    if local_i < TPB and global_i < size:
+        buffer_A[local_i] = input[global_i]
+    else:
+        buffer_A[local_i] = 0
 
     # Wait for buffer_A initialization
     _ = mbarrier_arrive(init_barrier.ptr)
@@ -200,14 +203,34 @@ fn double_buffered_stencil_computation[
         if iteration % 2 == 0:
             # Even iteration: Read from A, Write to B
 
-            # FILL ME IN (roughly 12 lines)
-            ...
+            stencil_sum: output.element_type = 0
+            valid = 0
+            @parameter
+            for k in range(-1, 2):
+                if local_i + k >= 0 and local_i + k < TPB and global_i + k < size:
+                    stencil_sum += buffer_A[local_i + k]
+                    valid += 1
+
+            if valid > 0:
+                buffer_B[local_i] = stencil_sum / valid
+            else:
+                buffer_B[local_i] = buffer_A[local_i]
 
         else:
             # Odd iteration: Read from B, Write to A
 
-            # FILL ME IN (roughly 12 lines)
-            ...
+            stencil_sum: output.element_type = 0
+            valid = 0
+            @parameter
+            for k in range(-1, 2):
+                if local_i + k >= 0 and local_i + k < TPB and global_i + k < size:
+                    stencil_sum += buffer_B[local_i + k]
+                    valid += 1
+
+            if valid > 0:
+                buffer_A[local_i] = stencil_sum / valid
+            else:
+                buffer_A[local_i] = buffer_B[local_i]
 
         # Memory barrier: wait for all writes before buffer swap
         _ = mbarrier_arrive(iter_barrier.ptr)
