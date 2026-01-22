@@ -221,8 +221,11 @@ fn tensor_core_matrix_multiplication[
 
                     @parameter
                     for mma_n in range(WN // MMA_N):
-                        # FILL IN (roughly 8 lines)
-                        ...
+                        a_reg = mma_op.load_a(A_warp_tile)
+                        b_reg = mma_op.load_b(B_warp_tile)
+                        c_reg = mma_op.load_c(C_warp_tile)
+                        d_reg = mma_op.mma_op(a_reg, b_reg, c_reg)
+                        mma_op.store_d(C_warp_tile, d_reg)
 
     # Store the final per-warp accumulation to the output warp tile
     if warp_is_active:
