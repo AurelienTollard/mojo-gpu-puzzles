@@ -156,7 +156,7 @@ fn tensor_core_matrix_multiplication[
 
     mma_op = TensorCore[A.dtype, C.dtype, Index(MMA_M, MMA_N, MMA_K)]()
 
-    # Shared SRAM tiles (no padding to stay under shared memory limit)
+    # Shared SRAM tiles (same as before)
     A_sram_tile = LayoutTensor[
         A.dtype,
         Layout.row_major(BM, BK),
@@ -170,78 +170,99 @@ fn tensor_core_matrix_multiplication[
         address_space = AddressSpace.SHARED,
     ].stack_allocation()
 
-    # One per-warp accumulator tile of shape [WM, WN]
-    C_warp_accum = LayoutTensor[
-        C.dtype,
-        Layout.row_major(WM, WN),
-        MutAnyOrigin,
-        address_space = AddressSpace.GENERIC,
+    comptime GROUP = 2
+
+    comptime FRAGS_M = WM // MMA_M
+    comptime FRAGS_N = WN // MMA_N
+    comptime TOTAL_FRAGS = FRAGS_M * FRAGS_N
+
+    # Two fragment accumulators (kept small to reduce registers)
+    C_frag_accum0 = LayoutTensor[
+        C.dtype, Layout.row_major(MMA_M, MMA_N), MutAnyOrigin,
+        address_space = AddressSpace.LOCAL,
     ].stack_allocation()
 
-    # Zero initialize accumulator (only for active warps)
+    C_frag_accum1 = LayoutTensor[
+        C.dtype, Layout.row_major(MMA_M, MMA_N), MutAnyOrigin,
+        address_space = AddressSpace.LOCAL,
+    ].stack_allocation()
+
     if warp_is_active:
 
+        # Process fragments in groups of 2
         @parameter
-        for i in range(WM):
+        for base in range(0, TOTAL_FRAGS, GROUP):
 
+            # Map linear ids -> (mma_m, mma_n)
+            frag0 = base
+            frag1 = base + 1
+
+            mma_m0 = frag0 // FRAGS_N
+            mma_n0 = frag0 %  FRAGS_N
+
+            mma_m1 = frag1 // FRAGS_N
+            mma_n1 = frag1 %  FRAGS_N
+
+            # Zero init both fragment accumulators
             @parameter
-            for j in range(WN):
-                C_warp_accum[i, j] = 0.0
+            for i in range(MMA_M):
+                @parameter
+                for j in range(MMA_N):
+                    C_frag_accum0[i, j] = 0.0
+                    C_frag_accum1[i, j] = 0.0
 
-    # Sweep across K in BK chunks (single-buffered)
-    for k_i in range(K // BK):
-        barrier()
+            # Full sweep over K (BK chunks)
+            for k_i in range(K // BK):
+                barrier()
 
-        A_dram_tile = A.tile[BM, BK](Int(block_idx.y), k_i)
-        B_dram_tile = B.tile[BK, BN](k_i, Int(block_idx.x))
+                A_dram_tile = A.tile[BM, BK](Int(block_idx.y), k_i)
+                B_dram_tile = B.tile[BK, BN](k_i, Int(block_idx.x))
 
-        copy_dram_to_sram_async[
-            thread_layout = Layout.row_major(4, 8),
-            num_threads=256,
-            block_dim_count=BLOCK_DIM_COUNT,
-        ](A_sram_tile.vectorize[1, 4](), A_dram_tile.vectorize[1, 4]())
-        copy_dram_to_sram_async[
-            thread_layout = Layout.row_major(4, 8),
-            num_threads=256,
-            block_dim_count=BLOCK_DIM_COUNT,
-        ](B_sram_tile.vectorize[1, 4](), B_dram_tile.vectorize[1, 4]())
+                copy_dram_to_sram_async[
+                    thread_layout = Layout.row_major(4, 8),
+                    num_threads=256,
+                    block_dim_count=BLOCK_DIM_COUNT,
+                ](A_sram_tile.vectorize[1, 4](), A_dram_tile.vectorize[1, 4]())
 
-        async_copy_wait_all()
-        barrier()
+                copy_dram_to_sram_async[
+                    thread_layout = Layout.row_major(4, 8),
+                    num_threads=256,
+                    block_dim_count=BLOCK_DIM_COUNT,
+                ](B_sram_tile.vectorize[1, 4](), B_dram_tile.vectorize[1, 4]())
 
-        if warp_is_active:
-            A_warp_tile = A_sram_tile.tile[WM, BK](warp_y, 0)
-            B_warp_tile = B_sram_tile.tile[BK, WN](0, warp_x)
+                async_copy_wait_all()
+                barrier()
 
-            @parameter
-            for mma_k in range(BK // MMA_K):
+                A_warp_tile = A_sram_tile.tile[WM, BK](warp_y, 0)
+                B_warp_tile = B_sram_tile.tile[BK, WN](0, warp_x)
 
                 @parameter
-                for mma_m in range(WM // MMA_M):
+                for mma_k in range(BK // MMA_K):
 
-                    @parameter
-                    for mma_n in range(WN // MMA_N):
-                        a_tile = A_warp_tile.tile[MMA_M, MMA_K](mma_m, mma_k)
-                        b_tile = B_warp_tile.tile[MMA_K, MMA_N](mma_k, mma_n)
-                        c_tile = C_warp_accum.tile[MMA_M, MMA_N](mma_m, mma_n)
-                        a_reg = mma_op.load_a(a_tile)
-                        b_reg = mma_op.load_b(b_tile)
-                        c_reg = mma_op.load_c(c_tile)
-                        d_reg = mma_op.mma_op(a_reg, b_reg, c_reg)
-                        mma_op.store_d(c_tile, d_reg)
+                    # Fragment 0 update
+                    A0 = A_warp_tile.tile[MMA_M, MMA_K](mma_m0, mma_k)
+                    B0 = B_warp_tile.tile[MMA_K, MMA_N](mma_k, mma_n0)
+                    a0 = mma_op.load_a(A0)
+                    b0 = mma_op.load_b(B0)
+                    c0 = mma_op.load_c(C_frag_accum0)
+                    d0 = mma_op.mma_op(a0, b0, c0)
+                    mma_op.store_d(C_frag_accum0, d0)
 
-    # Store the final per-warp accumulation to the output warp tile
-    if warp_is_active:
+                    # Fragment 1 update
+                    A1 = A_warp_tile.tile[MMA_M, MMA_K](mma_m1, mma_k)
+                    B1 = B_warp_tile.tile[MMA_K, MMA_N](mma_k, mma_n1)
+                    a1 = mma_op.load_a(A1)
+                    b1 = mma_op.load_b(B1)
+                    c1 = mma_op.load_c(C_frag_accum1)
+                    d1 = mma_op.mma_op(a1, b1, c1)
+                    mma_op.store_d(C_frag_accum1, d1)
 
-        @parameter
-        for mma_m in range(WM // MMA_M):
+            # Store both completed fragments
+            var C_out0 = C_warp_tile.tile[MMA_M, MMA_N](mma_m0, mma_n0)
+            mma_op.store_d(C_out0, mma_op.load_c(C_frag_accum0))
 
-            @parameter
-            for mma_n in range(WN // MMA_N):
-                var C_mma_tile = C_warp_tile.tile[MMA_M, MMA_N](mma_m, mma_n)
-                Acc_mma_tile = C_warp_accum.tile[MMA_M, MMA_N](mma_m, mma_n)
-                frag = mma_op.load_c(Acc_mma_tile)
-                mma_op.store_d(C_mma_tile, frag)
+            var C_out1 = C_warp_tile.tile[MMA_M, MMA_N](mma_m1, mma_n1)
+            mma_op.store_d(C_out1, mma_op.load_c(C_frag_accum1))
 
 
 # ANCHOR_END: tensor_core_matrix_multiplication
