@@ -1,6 +1,4 @@
 from memory import UnsafePointer
-
-# ANCHOR: softmax_gpu_kernel
 from gpu import thread_idx, block_idx, block_dim, barrier
 from gpu.host import DeviceContext, HostBuffer, DeviceBuffer
 from testing import assert_equal, assert_almost_equal
@@ -36,7 +34,6 @@ fn local_max_gpu_kernel[
     val: output.element_type = min_finite[dtype]()
     if global_i < input_size:
         val = input[global_i]
-    barrier()
 
     block_max = block.max[block_size = BLOCK_DIM_X, broadcast = False](val)
     if local_i == 0:
@@ -60,7 +57,6 @@ fn local_sum_gpu_kernel[
     val: output.element_type = min_finite[dtype]()
     if local_i < local_max.shape[0]():
         val = local_max[local_i]
-    barrier()
     global_max = block.max[block_size = BLOCK_DIM_X, broadcast = True](val)
     if global_i == 0:
         max_output[0] = global_max
@@ -95,7 +91,6 @@ fn softmax_gpu_kernel[
     val: output.element_type = 0.0
     if local_i < local_sum.shape[0]():
         val = local_sum[local_i]
-    barrier()
     global_sum = block.sum[block_size = BLOCK_DIM_X, broadcast = True](val)
 
     # get local_sum
